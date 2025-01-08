@@ -5,7 +5,10 @@ createApp({
         return {
             list: [],
             active: false,
-            tableHeight: 500
+            tableHeight: 500,
+            uploadHarName: '',      //上传的HAR文件名
+            failedList: [],         //打包失败的list
+            showFailedOnly: false,  //控制是否仅显示失败图片
         }
     },
     mounted() {
@@ -30,12 +33,17 @@ createApp({
             entries.forEach(e => {
                 if (/image/.test(e.response.content.mimeType) && ! /favicon.ico|hm.gif|google-analytics|cnzz/.test(e.request.url)) {
                     let url = e.request.url
+                    let imgFileName = that.getImageFileName(url);
+                    let truncatedUrl = that.getTruncatedURL(url);
                     let item = {
-                        url: url,
-                        name: url.split('/')[url.split('/').length - 1],
+                        //url: url,
+                        url: truncatedUrl ? truncatedUrl:url,
+                        //name: url.split('/')[url.split('/').length - 1],
+                        name: imgFileName ? imgFileName:url.split('/')[url.split('/').length - 1],
                         size: e.response.content.size,
                         base64: 'data:image/png;base64,' + e.response.content.text
                     }
+                    console.log(imgFileName);
                     list.push(item)
                 }
             });
@@ -47,10 +55,15 @@ createApp({
             }
         };
         reader.readAsText(file.raw);
+        if (file){
+            this.uploadHarName = file.name.replace(/\.[^/.]+$/, ''); // 去除文件扩展名
+        }
     },
     handleRemove() {
         this.list = []
+        this.failedList = []     //failedList清空
         this.active = false
+        this.uploadHarName = ''
     },
     filesize(fileByte = 0) {
         var fileByte = Number(fileByte)
@@ -70,11 +83,41 @@ createApp({
         let ctx = canvas.getContext('2d')
         ctx.drawImage(image, 0, 0, image.width, image.height)
         // 获取图片后缀名
+        /*
         let extension = image.src
             .substring(image.src.lastIndexOf('.') + 1)
             .toLowerCase()
+            */
+        // let name = this.getImageFileName(image.src);
+        let url = image.src;
+        let imgFileName = this.getImageFileName(image.src);
+        let name = imgFileName ? imgFileName:url.split('/')[url.split('/').length - 1];
+        let dotPositon = name.lastIndexOf('.');
+        let extension = dotPositon ? name.substring(name.lastIndexOf('.') + 1).toLowerCase() : null;
         // 某些图片 url 可能没有后缀名，默认是 png
         return canvas.toDataURL('image/' + (extension ? extension : 'png'), 1)
+    },
+    getTruncatedURL(url){
+        let filename = this.getImageFileName(url);
+        if(filename){
+            let index = url.lastIndexOf(filename);
+            if(index != -1){
+                return url.substring(0, index+filename.length);
+            }
+        }
+        return null;
+    },
+    getImageFileName(url){
+        let parsedUrl = new URL(url);
+        let pathname = parsedUrl.pathname;
+        let filenameMatch = pathname.match(/\/([^\/]+\.(png|webp|jpg|jpeg|gif|bmp|svg|ico))$/i);
+
+        if(filenameMatch && filenameMatch[1]){
+            return filenameMatch[1];
+        }
+        else{
+            return null;
+        }
     },
     downloadSingle(url, downloadName) {
         let that = this
@@ -93,10 +136,14 @@ createApp({
     },
     downloadZip() {
         let that = this
+
+        let harName = this.uploadHarName || '原神网页小活动资源包'
+        harName = harName.replace(/[^\w\u4e00-\u9fa5]/g, '_')
+
         ElementPlus.ElMessageBox.prompt('请输入保存文件名', '提示', {
             confirmButtonText: '确认打包',
             cancelButtonText: '取消',
-            inputValue: '原神网页小活动资源包',
+            inputValue: harName,
             inputPattern: /^[\u4E00-\u9FA5A-Za-z0-9_]+$/,
             inputErrorMessage: '只允许中文、英文、数字和下划线',
         }).then(({ value }) => {
@@ -104,7 +151,13 @@ createApp({
             let zip = new JSZip()
             let fileFolder = zip.folder(zipName) // 创建 zipName 文件夹
             let fileList = []
+            let successCount = 0
+            let failCount =0
+            let failedImages = []
+
             ElementPlus.ElMessage.warning('正在打包中。。。')
+            let completedRequests = 0
+
             this.list.forEach(e => {
                 let name = e.name
                 let image = new Image()
@@ -113,28 +166,73 @@ createApp({
                 let time = new Date().getTime()
                 image.src = /\?/.test(e.url) ? e.url + '&timestamp=' + time : e.url + '?timestamp=' + time
                 image.onload = async() => {
+                    completedRequests++
                     let url = await that.getImageBase64(image)
                     fileList.push({
                         name: name,
                         img: url.substring(22) // 截取 data:image/png;base64, 后的数据
                     })
-                    if (fileList.length === that.list.length) {
-                        if (fileList.length) {
-                            for (let k = 0; k < fileList.length; k++) {
-                                // 往文件夹中，添加每张图片数据
-                                fileFolder.file(fileList[k].name + '.png', fileList[k].img, {
-                                    base64: true
-                                })
-                            }
-                            zip.generateAsync({ type: 'blob' }).then(content => {
+                    successCount++
+
+                    if (completedRequests == that.list.length){
+                        that.showStats(successCount, failCount, failedImages)
+
+                        if (fileList.length){
+                            fileList.forEach(file => {
+                                fileFolder.file(file.name, file.img, {base64:true})
+                            })
+                            zip.generateAsync({type: 'blob' }).then(content => {
                                 ElementPlus.ElMessage.success('打包完毕')
                                 saveAs(content, zipName + '.zip')
                             })
+                        }else{
+                            ElementPlus.ElMessage.error('所有图片请求失败，无法打包');
+                        }
+                    }
+                }
+
+                image.onerror = (error) => {
+                    completedRequests++
+                    failCount++
+                    let url = that.getImageBase64(image)
+                    failedImages.push(e)
+                    if (completedRequests == that.list.length){
+                        that.showStats(successCount, failCount, failedImages)
+
+                        if (fileList.length){
+                            fileList.forEach(file => {
+                                fileFolder.file(file.name, file.img, {base64:true})
+                            })
+                            zip.generateAsync({type: 'blob' }).then(content => {
+                                ElementPlus.ElMessage.success('打包完毕')
+                                saveAs(content, zipName + '.zip')
+                            })
+                        }else{
+                            ElementPlus.ElMessage.error('所有图片请求失败，无法打包');
                         }
                     }
                 }
             });
         })
-    }
+    },
+
+    showStats(successCount, failCount, failedImages){
+        let message = `打包完成！\n成功：${successCount}，失败：${failCount}`;
+        ElementPlus.ElMessageBox.confirm(message, '统计信息', {
+            confirmButtonText: '查看失败列表',
+            cancelButtonText: '关闭',
+        }).then(() => {
+            // 点击查看失败列表按钮时，直接更新 list 显示失败的图片
+            this.failedList = failedImages;
+            this.showFailedOnly = true; // 设置只显示失败的图片
+        }).catch(() => {
+            // 关闭按钮处理
+            ElementPlus.ElMessage.info('关闭统计信息');
+        });
+    },
+
+    toggleList(){
+        this.showFailedOnly = !this.showFailedOnly;
+    },
     }
 }).use(ElementPlus).mount('#app')

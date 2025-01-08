@@ -35,12 +35,13 @@
                         <el-button type="primary">上传Har文件</el-button>
                     </el-upload>
                     <el-button type="success" @click="downloadZip" v-if="active">打包下载</el-button>
+                    <el-button @click="toggleList">{{ showFailedOnly ? '查看完整列表' : '查看失败列表' }}</el-button>
                 </div>
             </el-header>
             <el-main>
                 <div class="main">
                     <el-table
-                        :data="list"
+                        :data="showFailedOnly ? failedList : list"
                         style="width: 100%"
                         :height="tableHeight"
                         empty-text="请上传Har文件"
